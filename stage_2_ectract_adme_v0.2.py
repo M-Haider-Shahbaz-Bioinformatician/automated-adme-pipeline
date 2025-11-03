@@ -11,10 +11,8 @@ RESULTS_DIR = "results"
 FINAL_OUTPUT_FILE = os.path.join(RESULTS_DIR, "swissadme_final_output.csv")
 MAX_CONCURRENT_BROWSERS = 1  # Keep this at 1 for reliability
 BATCH_COOLDOWN_SECONDS = 60  # 60-second pause between batches
-# --- START: NEW FIX ---
-# This makes us look like a real browser, not a bot.
 USER_AGENT_STRING = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-# --- END: NEW FIX ---
+# ---------------------
 
 async def get_property_text(page, label: str):
     """A robust helper function to extract text from the <td> tag."""
@@ -41,12 +39,8 @@ async def run_swissadme_and_extract(playwright, compound_name, smiles, semaphore
             await asyncio.sleep(3)
         
             browser = await playwright.chromium.launch(headless=True)
-            
-            # --- START: NEW FIX ---
-            # Create a new browser "context" with our fake User-Agent
             context = await browser.new_context(user_agent=USER_AGENT_STRING)
             page = await context.new_page()
-            # --- END: NEW FIX ---
             
             await page.goto("https://www.swissadme.ch", timeout=90000)
             
@@ -85,21 +79,31 @@ async def run_swissadme_and_extract(playwright, compound_name, smiles, semaphore
         
         except Exception as e:
             print(f"    Failed processing {compound_name}: {e}")
-            return data
+            return data # Return partial data (at least Compound and SMILES)
             
         finally:
-            # Close everything in order
-            if page:
-                await page.close()
-            if context:
-                await context.close()
-            if browser:
-                await browser.close()
+            # Close everything, catching individual errors
+            try:
+                if page:
+                    await page.close()
+            except Exception:
+                pass # Ignore errors during cleanup
+            try:
+                if context:
+                    await context.close()
+            except Exception:
+                pass # Ignore errors during cleanup
+            try:
+                if browser:
+                    await browser.close()
+            except Exception:
+                pass # Ignore errors during cleanup
             
 
 async def main():
     """
     Main async function to find all batch files and process them one by one.
+    Implements compound-level resume logic.
     """
     os.makedirs(RESULTS_DIR, exist_ok=True)
     
@@ -108,29 +112,61 @@ async def main():
     
     if not batch_files:
         print("Error: No 'smiles_input_batch_*.csv' files found.")
-        print("Please run 'stage_1_make_batches.py' first.")
+        print("Please run 'stage_1_get_smiles_v0.2.py' first.")
         sys.exit(1)
         
     print(f"Found {len(batch_files)} batch file(s) to process.")
-    
-    all_results_list = []
     
     async with async_playwright() as p:
         
         for i, batch_file in enumerate(batch_files):
             print("-" * 30)
-            print(f"Processing Batch {i+1} / {len(batch_files)}: {batch_file}")
+            print(f"Checking Batch {i+1} / {len(batch_files)}: {batch_file}")
+            
+            batch_num = i + 1
+            intermediate_result_file = os.path.join(RESULTS_DIR, f"results_batch_{batch_num}.csv")
+            
+            # --- START: NEW "RESUME" FEATURE (COMPOUND-LEVEL) ---
+            already_processed_compounds = set()
+            all_batch_results = []
+            
+            if os.path.exists(intermediate_result_file):
+                try:
+                    print(f"  > Found existing results file: {intermediate_result_file}.")
+                    df_existing = pd.read_csv(intermediate_result_file)
+                    if 'Compound' in df_existing.columns and not df_existing.empty:
+                        already_processed_compounds = set(df_existing['Compound'])
+                        all_batch_results = df_existing.to_dict('records') # Load existing data
+                        print(f"  > Loaded {len(already_processed_compounds)} already processed compounds.")
+                    else:
+                        print(f"  > Results file is empty or has no 'Compound' column. Will process all.")
+                except pd.errors.EmptyDataError:
+                    print(f"  > Existing results file {intermediate_result_file} is empty. Will process all.")
+                except Exception as e:
+                    print(f"  > Error loading {intermediate_result_file}: {e}. Will re-process all for this batch.")
+            # --- END: NEW "RESUME" FEATURE ---
+
+            print(f"Processing Batch {batch_num} / {len(batch_files)}: {batch_file}")
             
             try:
                 df_input = pd.read_csv(batch_file)
+                if 'compound' not in df_input.columns or 'smiles' not in df_input.columns:
+                     print(f"  Error: {batch_file} is missing 'compound' or 'smiles' column. Skipping.")
+                     continue
             except Exception as e:
                 print(f"  Error reading {batch_file}: {e}. Skipping.")
                 continue
                 
             semaphore = asyncio.Semaphore(MAX_CONCURRENT_BROWSERS)
             tasks = []
+            compounds_to_process_count = 0
             
             for _, row in df_input.iterrows():
+                # Check if compound is already processed
+                if row['compound'] in already_processed_compounds:
+                    # print(f"    Skipping already processed: {row['compound']}") # Optional: too much logging
+                    continue
+                    
                 if pd.notna(row['smiles']):
                     tasks.append(
                         run_swissadme_and_extract(
@@ -140,12 +176,30 @@ async def main():
                             semaphore
                         )
                     )
+                    compounds_to_process_count += 1
+            
+            if compounds_to_process_count == 0:
+                print(f"  > All {len(df_input)} compounds in this batch are already processed. Skipping to next batch.")
+                continue
+            
+            print(f"  > Processing {compounds_to_process_count} new compound(s) in this batch...")
             
             # Run all tasks for this batch
-            batch_results = await asyncio.gather(*tasks)
-            all_results_list.extend(batch_results)
+            new_results = await asyncio.gather(*tasks)
             
-            print(f"Finished Batch {i+1} / {len(batch_files)}.")
+            # Add new results to the (potentially) existing results
+            all_batch_results.extend([res for res in new_results if res is not None and 'Compound' in res])
+            
+            # Save the intermediate results for this batch
+            if not all_batch_results:
+                print(f"  > No valid results for Batch {batch_num}. Saving empty file.")
+                # Define columns even for an empty DF to avoid issues later
+                df_batch_final = pd.DataFrame(columns=["Compound", "SMILES"]) 
+            else:
+                df_batch_final = pd.DataFrame(all_batch_results)
+
+            df_batch_final.to_csv(intermediate_result_file, index=False)
+            print(f"  > Finished Batch {batch_num}. Results saved/updated in {intermediate_result_file}")
             
             # If it's not the last batch, add the cooldown
             if i < len(batch_files) - 1:
@@ -153,10 +207,32 @@ async def main():
                 await asyncio.sleep(BATCH_COOLDOWN_SECONDS)
         
     print("=" * 30)
-    print("All batches processed.")
+    print("All batches processed. Combining results...")
     
-    # Convert all results into the final DataFrame
-    df_final = pd.DataFrame([res for res in all_results_list if res is not None])
+    # Combine all intermediate results at the end
+    all_batch_results_files = sorted(glob.glob(os.path.join(RESULTS_DIR, "results_batch_*.csv")))
+    
+    if not all_batch_results_files:
+        print("No batch result files were found. Final output file will be empty.")
+        # Use return instead of sys.exit in async function
+        return
+
+    df_list = []
+    for f in all_batch_results_files:
+        try:
+            df_temp = pd.read_csv(f)
+            if not df_temp.empty:
+                df_list.append(df_temp)
+            else:
+                 print(f"  > Warning: {f} is empty. Skipping.")
+        except pd.errors.EmptyDataError:
+            print(f"  > Warning: {f} is empty. Skipping.")
+
+    if not df_list:
+        print("All result files were empty. No final file created.")
+        return
+
+    df_final = pd.concat(df_list)
     
     column_order = [
         "Compound", "SMILES", "Molecular_Formula", "Molecular_Weight", 
@@ -164,12 +240,25 @@ async def main():
         "Lipinski_Filter", "Bioavailability_Score"
     ]
     
+    # Reindex, filling missing columns with None (or NaN)
     df_final = df_final.reindex(columns=column_order) 
     df_final.to_csv(FINAL_OUTPUT_FILE, index=False)
     
     print(f"Stage 2 Complete.")
     print(f"Final combined output CSV saved to: {FINAL_OUTPUT_FILE}")
+    
+    # --- START: NEW "CLEANUP" FEATURE ---
+    print("Cleaning up temporary batch files...")
+    for f in all_batch_results_files:
+        try:
+            os.remove(f)
+            print(f"  > Removed {f}")
+        except Exception as e:
+            print(f"  > Error removing {f}: {e}")
+    # --- END: NEW "CLEANUP" FEATURE ---
+    
+    print("Cleanup complete.")
     print(f"All individual PDF reports saved in: {RESULTS_DIR}/")
 
-if __name__ == "__main__":
+if __name__ == "__main__":  
     asyncio.run(main())
