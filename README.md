@@ -4,33 +4,35 @@ This is a two-stage computational pipeline to automate the process of Absorption
 
 The workflow fetches compound data from PubChem and then extracts detailed pharmacokinetic and physicochemical properties from the SwissADME web service.
 
+This script is designed to be robust against server-side bot detection by batching requests, simulating a human User-Agent, and running compounds one at a time with built-in "cooldown" periods.
+
 ## **Project Stages**
 
-### **Stage 1: Name-to-SMILES (stage\_1\_get\_smiles.py)**
+### **Stage 1: Name-to-SMILES & Batching (stage\_1\_get\_smiles\_v0.2.py)**
 
 * **Input:** compounds.txt (a plain text file with one compound name per line).  
-* **Process:** Queries the PubChem PUG REST API to find the canonical SMILES string for each compound.  
-* **Output:** smiles\_input.csv (a CSV file mapping the compound names to their SMILES strings).
+* **Process:** Queries the PubChem PUG REST API to find the canonical SMILES string for each compound. It then splits the full list into multiple small batch files (e.g., smiles\_input\_batch\_1.csv).  
+* **Output:** Multiple smiles\_input\_batch\_\*.csv files.
 
-### **Stage 2: SMILES-to-Properties (stage\_2\_extract\_adme.py)**
+### **Stage 2: Batch Processing (stage\_2\_ectract\_adme\_v0.2.py)**
 
-* **Input:** smiles\_input.csv (the output from Stage 1).  
-* **Process:** Uses browser automation (Playwright) to run each SMILES string through the SwissADME web service. It simulates a human user to bypass anti-scraping measures.  
+* **Input:** All smiles\_input\_batch\_\*.csv files from Stage 1\.  
+* **Process:** Uses browser automation (Playwright) to run each compound, one by one. It processes one full batch file, pauses for a 60-second "cooldown," and then moves to the next batch.  
 * **Output:**  
-  * results/swissadme\_final\_output.csv: A final CSV file containing all the extracted properties.  
-  * results/: A directory containing individual PDF reports for each compound, archived directly from the SwissADME results page.
+  * results/swissadme\_final\_output.csv: A **single, combined** CSV file containing all extracted properties from all batches.  
+  * results/: A directory containing individual PDF reports for each compound.
 
 ## **Technology Stack**
 
 * Python 3.10+  
-* PubChemPy: For interacting with the PubChem API in Stage 1\.  
-* Pandas: For reading and writing CSV files.  
-* Playwright & Asyncio: For high-throughput, asynchronous browser automation in Stage 2\.
+* PubChemPy: For interacting with the PubChem API.  
+* Pandas: For reading/writing CSV files and managing data.  
+* Playwright & Asyncio: For robust, asynchronous browser automation.
 
 ## **Setup and Installation**
 
 1. **Clone the repository:**  
-   git clone https://github.com/M-Haider-Shahbaz-Bioinformatician/automated-adme-pipeline.git  
+   git clone \[https://github.com/M-Haider-Shahbaz-Bioinformatician/automated-adme-pipeline.git\](https://github.com/M-Haider-Shahbaz-Bioinformatician/automated-adme-pipeline.git)  
    cd automated-adme-pipeline
 
 2. **Create and activate a virtual environment:**  
@@ -52,26 +54,20 @@ The workflow fetches compound data from PubChem and then extracts detailed pharm
 
 ### **Step 1: Create your input file**
 
-Edit the compounds.txt file and add your list of compound names, with one name per line.
+Edit the compounds.txt file and add your full list of compound names (e.g., 123+ names).
 
-### **Step 2: Run Stage 1**
+### **Step 2: Run Stage 1 (Batch Creator)**
 
-python stage\_1\_get\_smiles.py
+python stage\_1\_get\_smiles\_v0.2.py
 
-This will create the smiles\_input.csv file.
+This will fetch all SMILES and create the small smiles\_input\_batch\_\*.csv files.
 
-### **Step 3: Run Stage 2**
+### **Step 3: Run Stage 2 (Batch Runner)**
 
-python stage\_2\_extract\_adme.py
+python stage\_2\_ectract\_adme\_v0.2.py
 
-This will process the smiles\_input.csv file and generate all the final data in the results/ directory.
+This will slowly and reliably process all batch files and create the final swissadme\_final\_output.csv file. This may take a long time to complete.
 
 ## **MAINTENANCE WARNING**
 
-This pipeline's Stage 2 relies on **web scraping**, which is inherently brittle. The SwissADME website can (and does) change its HTML structure, which will break the script.
-
-When the script fails, you must follow the maintenance procedure outlined in the original technical guide:
-
-1. Run the script on a single compound.  
-2. Inspect the page manually to see what changed (e.g., button text, element IDs, HTML tags).  
-3. Update stage\_2\_extract\_adme.py to match the new website structure.
+This pipeline relies on web scraping. If the SwissADME website changes its HTML, the script will break. You will need to inspect the website manually and update the selectors (e.g., td:text-is('Molecular weight')) in stage\_2\_ectract\_adme\_v0.2.py to match.

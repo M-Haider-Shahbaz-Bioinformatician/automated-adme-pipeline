@@ -1,0 +1,77 @@
+# **Automated ADME-Tox Profiling Pipeline**
+
+This is a two-stage computational pipeline to automate the process of Absorption, Distribution, Metabolism, and Excretion (ADME) profiling for a list of chemical compounds.
+
+The workflow fetches compound data from PubChem and then extracts detailed pharmacokinetic and physicochemical properties from the SwissADME web service.
+
+## **Project Stages**
+
+### **Stage 1: Name-to-SMILES (stage\_1\_get\_smiles.py)**
+
+* **Input:** compounds.txt (a plain text file with one compound name per line).  
+* **Process:** Queries the PubChem PUG REST API to find the canonical SMILES string for each compound.  
+* **Output:** smiles\_input.csv (a CSV file mapping the compound names to their SMILES strings).
+
+### **Stage 2: SMILES-to-Properties (stage\_2\_extract\_adme.py)**
+
+* **Input:** smiles\_input.csv (the output from Stage 1).  
+* **Process:** Uses browser automation (Playwright) to run each SMILES string through the SwissADME web service. It simulates a human user to bypass anti-scraping measures.  
+* **Output:**  
+  * results/swissadme\_final\_output.csv: A final CSV file containing all the extracted properties.  
+  * results/: A directory containing individual PDF reports for each compound, archived directly from the SwissADME results page.
+
+## **Technology Stack**
+
+* Python 3.10+  
+* PubChemPy: For interacting with the PubChem API in Stage 1\.  
+* Pandas: For reading and writing CSV files.  
+* Playwright & Asyncio: For high-throughput, asynchronous browser automation in Stage 2\.
+
+## **Setup and Installation**
+
+1. **Clone the repository:**  
+   git clone https://github.com/M-Haider-Shahbaz-Bioinformatician/automated-adme-pipeline.git  
+   cd automated-adme-pipeline
+
+2. **Create and activate a virtual environment:**  
+   \# On Windows  
+   python \-m venv venv  
+   .\\venv\\Scripts\\activate
+
+   \# On macOS/Linux  
+   python3 \-m venv venv  
+   source venv/bin/activate
+
+3. **Install the required libraries:**  
+   pip install \-r requirements.txt
+
+4. **Install Playwright's browser binaries** (one-time setup):  
+   playwright install
+
+## **How to Run the Pipeline**
+
+### **Step 1: Create your input file**
+
+Edit the compounds.txt file and add your list of compound names, with one name per line.
+
+### **Step 2: Run Stage 1**
+
+python stage\_1\_get\_smiles.py
+
+This will create the smiles\_input.csv file.
+
+### **Step 3: Run Stage 2**
+
+python stage\_2\_extract\_adme.py
+
+This will process the smiles\_input.csv file and generate all the final data in the results/ directory.
+
+## **MAINTENANCE WARNING**
+
+This pipeline's Stage 2 relies on **web scraping**, which is inherently brittle. The SwissADME website can (and does) change its HTML structure, which will break the script.
+
+When the script fails, you must follow the maintenance procedure outlined in the original technical guide:
+
+1. Run the script on a single compound.  
+2. Inspect the page manually to see what changed (e.g., button text, element IDs, HTML tags).  
+3. Update stage\_2\_extract\_adme.py to match the new website structure.
